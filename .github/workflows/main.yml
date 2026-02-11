@@ -1,4 +1,4 @@
-name: Terraform Apply (OIDC)
+name: Terraform Apply
 
 on:
   workflow_dispatch:
