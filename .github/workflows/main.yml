@@ -23,14 +23,14 @@ permissions:
   contents: read
   id-token: write
 
-# Global env (safe, but don't reference env.* in expressions)
+# Global env (do not reference env.* in expressions)
 env:
   TF_IN_AUTOMATION: true
   TF_INPUT: false
 
 jobs:
   validate_and_plan:
-    # Use only inputs/vars contexts here
+    # Use only inputs/vars contexts here (not env.*)
     name: "Validate & Plan (${{ inputs.environment || vars.TF_VAR_environment }})"
     runs-on: ubuntu-latest
 
