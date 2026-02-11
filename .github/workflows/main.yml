@@ -1,1 +1,203 @@
+name: Terraform CI/CD
 
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - '**/*.tf'
+      - '.github/workflows/terraform.yml'
+      - 'hyderabad.tfvars'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - '**/*.tf'
+      - 'hyderabad.tfvars'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Terraform workspace/environment (e.g., hyderabad)'
+        required: true
+        default: 'hyderabad'
+
+permissions:
+  contents: read
+  id-token: write
+
+# Global env (safe, but don't reference env.* in expressions)
+env:
+  TF_IN_AUTOMATION: true
+  TF_INPUT: false
+
+jobs:
+  validate_and_plan:
+    # Use only inputs/vars contexts here
+    name: "Validate & Plan (${{ inputs.environment || vars.TF_VAR_environment }})"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Terraform plugin dir
+        id: tf-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.terraform.d/plugin-cache
+            ./.terraform
+          key: tf-${{ runner.os }}-${{ hashFiles('**/.terraform.lock.hcl') }}
+          restore-keys: |
+            tf-${{ runner.os }}-
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+          terraform_wrapper: false
+
+      - name: Configure Terraform plugin cache
+        shell: bash
+        run: |
+          mkdir -p ~/.terraform.d
+          cat > ~/.terraform.d/terraform.rc <<'RC'
+          plugin_cache_dir = "$HOME/.terraform.d/plugin-cache"
+          RC
+
+      - name: Determine workspace
+        id: ws
+        shell: bash
+        run: |
+          # Prefer manual input; else fall back to repo variable
+          WS="${{ inputs.environment || vars.TF_VAR_environment }}"
+          echo "workspace=$WS" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials via OIDC (Plan)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.TF_VAR_region }}
+
+      - name: Terraform fmt (check)
+        shell: bash
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init (uses S3 backend from backend.tf)
+        shell: bash
+        run: terraform init -upgrade
+
+      - name: Select/Create workspace
+        shell: bash
+        env:
+          WORKSPACE: ${{ steps.ws.outputs.workspace }}
+        run: |
+          set -euo pipefail
+          if terraform workspace list | sed 's/*//' | sed 's/ //g' | grep -qx "${WORKSPACE}"; then
+            terraform workspace select "${WORKSPACE}"
+          else
+            terraform workspace new "${WORKSPACE}"
+          fi
+
+      - name: Terraform validate
+        shell: bash
+        run: terraform validate
+
+      - name: Terraform plan
+        shell: bash
+        env:
+          WORKSPACE: ${{ steps.ws.outputs.workspace }}
+        run: |
+          set -euo pipefail
+          terraform plan \
+            -var "account_id=${{ secrets.AWS_ACCOUNT_ID }}" \
+            -var "program=${{ secrets.TF_VAR_program }}" \
+            -var "region=${{ secrets.TF_VAR_region }}" \
+            -var "environment=${WORKSPACE}" \
+            -var-file="hyderabad.tfvars" \
+            -out=tfplan
+
+      - name: Show plan (human readable)
+        shell: bash
+        run: terraform show -no-color tfplan > plan.txt
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # Use inputs/vars only in expressions
+          name: tfplan-${{ inputs.environment || vars.TF_VAR_environment }}
+          path: |
+            tfplan
+            plan.txt
+
+  apply:
+    name: "Apply (${{ inputs.environment || vars.TF_VAR_environment }})"
+    needs: [validate_and_plan]
+    runs-on: ubuntu-latest
+    environment: prod
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Terraform plugin dir
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.terraform.d/plugin-cache
+            ./.terraform
+          key: tf-${{ runner.os }}-${{ hashFiles('**/.terraform.lock.hcl') }}
+          restore-keys: |
+            tf-${{ runner.os }}-
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+          terraform_wrapper: false
+
+      - name: Configure Terraform plugin cache
+        shell: bash
+        run: |
+          mkdir -p ~/.terraform.d
+          cat > ~/.terraform.d/terraform.rc <<'RC'
+          plugin_cache_dir = "$HOME/.terraform.d/plugin-cache"
+          RC
+
+      - name: Determine workspace
+        id: ws
+        shell: bash
+        run: |
+          WS="${{ inputs.environment || vars.TF_VAR_environment }}"
+          echo "workspace=$WS" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials via OIDC (Apply)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.TF_VAR_region }}
+
+      - name: Terraform init
+        shell: bash
+        run: terraform init -upgrade
+
+      - name: Select/Create workspace
+        shell: bash
+        env:
+          WORKSPACE: ${{ steps.ws.outputs.workspace }}
+        run: |
+          set -euo pipefail
+          if terraform workspace list | sed 's/*//' | sed 's/ //g' | grep -qx "${WORKSPACE}"; then
+            terraform workspace select "${WORKSPACE}"
+          else
+            terraform workspace new "${WORKSPACE}"
+          fi
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ inputs.environment || vars.TF_VAR_environment }}
+          path: .
+
+      - name: Terraform apply (uses saved plan)
+        shell: bash
+        run: terraform apply -auto-approve tfplan
