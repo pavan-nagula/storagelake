@@ -24,7 +24,7 @@ on:
 permissions:
   id-token: write
   contents: read
-
+#Terraform non‑interactive mode and no ANSI colors to keep logs clean.
 env:
   TF_INPUT: "false"
   TF_IN_AUTOMATION: "true"
@@ -36,10 +36,12 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ github.event.inputs.confirm == 'apply' }}
 
+#Pulls repository into the runner.
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+#Installs Terraform and disables the wrapper (so the raw Terraform CLI runs; useful for clean logs and exit codes).
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
