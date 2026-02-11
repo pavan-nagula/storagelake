@@ -66,10 +66,20 @@ jobs:
             -var "program=${{ github.event.inputs.program }}" \
             -var "region=${{ github.event.inputs.aws_region }}"
 
-      - name: Terraform Apply
+      # - name: Terraform Apply
+      #   run: |
+      #     terraform apply -auto-approve \
+      #       -var "account_id=436812234045" \
+      #       -var "environment=${{ github.event.inputs.environment }}" \
+      #       -var "program=${{ github.event.inputs.program }}" \
+      #       -var "region=${{ github.event.inputs.aws_region }}"
+
+      
+      - name: Terraform Destroy
         run: |
-          terraform apply -auto-approve \
+          terraform destroy -auto-approve \
             -var "account_id=436812234045" \
             -var "environment=${{ github.event.inputs.environment }}" \
             -var "program=${{ github.event.inputs.program }}" \
             -var "region=${{ github.event.inputs.aws_region }}"
+
